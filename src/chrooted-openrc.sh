@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script to setup Exherbo once chrooted in the configured stage3 tarball
+# Script to setup Exherbo with OpenRC once chrooted in the configured stage3 tarball
 
 CPU_CORES=$(nproc)
 GRUB_TIMEOUT=${GRUB_TIMEOUT:-5}
@@ -38,10 +38,10 @@ ask_config() {
     if [ -z "${LOADER}" ]; then
         echo
         if [ "${SYSTEM_TYPE}" == "UEFI" ]; then
-            read -rp $'Enter the boot loader to use (default: systemd-boot):\n(g) grub\n(s) systemd-boot\nWhat is your choice? ' bootloader_choice
+            read -rp $'Enter the boot loader to use (default: grub):\n(g) grub\nWhat is your choice? ' bootloader_choice
             case "${bootloader_choice}" in
                 g) LOADER="grub" ;;
-                *) LOADER="systemd-boot" ;;
+                *) LOADER="grub" ;;
             esac
         else
             LOADER="grub"
@@ -153,14 +153,22 @@ configure_packages_manager() {
         echo "${package}" >> "${PALUDIS_WORLD}"
     done
 
-    # Add options and packages depending on system and bootloader
-    if [ "${LOADER}" == "systemd-boot" ]; then
-        echo '*/* systemd
-sys-apps/systemd efi
-net-libs/nghttp2 utils
-sys-apps/coreutils xattr' >> ${PALUDIS_CONF}
-        echo 'sys-boot/dracut' >> ${PALUDIS_WORLD}
-    fi
+    # Configure for OpenRC instead of systemd
+    echo '*/* openrc
+sys-apps/openrc
+sys-apps/busybox
+net-misc/dhcpcd
+sys-apps/elogind
+sys-apps/dbus
+sys-apps/consolekit2' >> ${PALUDIS_CONF}
+
+    # Add OpenRC packages to world
+    echo 'sys-apps/openrc
+sys-apps/busybox
+net-misc/dhcpcd
+sys-apps/elogind
+sys-apps/dbus
+sys-apps/consolekit2' >> ${PALUDIS_WORLD}
 
     # With UEFI system, efivars must be mounted, and some packages installed
     if [ "${SYSTEM_TYPE}" == "UEFI" ]; then
@@ -180,11 +188,7 @@ update_system() {
 
     # Install bootloader package to get UEFI support (activated through options)
     if [ "${SYSTEM_TYPE}" == "UEFI" ]; then
-        if  [ "${LOADER}" == "systemd-boot" ]; then
-            cave resolve sys-apps/systemd -zx1 --skip-phase test
-        else # grub
-            cave resolve sys-boot/grub -zx1 --skip-phase test
-        fi
+        cave resolve sys-boot/grub -zx1 --skip-phase test
     fi
 }
 
@@ -224,7 +228,7 @@ compile_kernel() {
 
     make defconfig
 
-    # Enable some kernel options to get a working console wuthout too many logs
+    # Enable some kernel options to get a working console without too many logs
     scripts/config -e CONFIG_BOOT_VESA_SUPPORT
     scripts/config --set-val CONFIG_CONSOLE_LOGLEVEL_DEFAULT 3
     scripts/config -e CONFIG_DRM_FBDEV_EMULATION
@@ -265,34 +269,46 @@ compile_kernel() {
 }
 
 setup_bootloader() {
-    if [ "${LOADER}" == "systemd-boot" ]; then
-        echo 'compress="xz"' > /etc/dracut.conf.d/compress.conf
-        echo 'force="yes"' > /etc/dracut.conf.d/force.conf
-        echo 'hostonly="yes"' > /etc/dracut.conf.d/hostonly.conf
-        echo 'hostonly_mode="strict"' >> /etc/dracut.conf.d/hostonly.conf
-        echo 'dracutmodules="base bash dracut-systemd systemd systemd-initrd terminfo fs-lib i18n kernel-modules rootfs-block udev-rules usrmount"' > /etc/dracut.conf.d/modules.conf
+    # Configure GRUB for OpenRC
+    echo "set timeout=${GRUB_TIMEOUT}" >> /etc/grub.d/40_custom
 
-        bootctl install
-        kernel-install add "${KERNEL_VERSION}" /boot/vmlinuz-"${KERNEL_VERSION}"
-    else # grub
-        echo "set timeout=${GRUB_TIMEOUT}" >> /etc/grub.d/40_custom
-
-        GRUB_INSTALL_PARAMS=()
-        if [ "${SYSTEM_TYPE}" == "UEFI" ]; then
-            GRUB_INSTALL_PARAMS=( --efi-directory=/efi --bootloader-id=exherbo )
-        else # BIOS
-            GRUB_INSTALL_PARAMS=( "${DISK}" )
-        fi
-
-        grub-install "${GRUB_INSTALL_PARAMS[@]}"
-        grub-mkconfig -o /boot/grub/grub.cfg
+    GRUB_INSTALL_PARAMS=()
+    if [ "${SYSTEM_TYPE}" == "UEFI" ]; then
+        GRUB_INSTALL_PARAMS=( --efi-directory=/efi --bootloader-id=exherbo )
+    else # BIOS
+        GRUB_INSTALL_PARAMS=( "${DISK}" )
     fi
+
+    grub-install "${GRUB_INSTALL_PARAMS[@]}"
+    grub-mkconfig -o /boot/grub/grub.cfg
 }
 
-enable_services() {
-    systemctl enable sshd
-    systemctl enable dhcpcd
-    systemctl enable getty@ # Enable TTY login at boot
+configure_openrc() {
+    # Configure OpenRC services
+    echo "Configuring OpenRC services..."
+    
+    # Enable essential services
+    rc-update add sshd default
+    rc-update add dhcpcd default
+    rc-update add dbus default
+    rc-update add elogind default
+    rc-update add consolekit default
+    
+    # Configure OpenRC to use elogind for session management
+    echo 'rc_need="elogind"' > /etc/conf.d/consolekit
+    echo 'rc_need="elogind"' > /etc/conf.d/dbus
+    
+    # Configure networking
+    echo 'config_eth0="dhcp"' > /etc/conf.d/net
+    ln -sf /etc/init.d/net.lo /etc/init.d/net.eth0
+    rc-update add net.eth0 default
+    
+    # Configure console
+    echo 'keymap="'${KEYMAP}'"' > /etc/conf.d/keymaps
+    echo 'consolefont="lat9w-16"' > /etc/conf.d/consolefont
+    
+    # Set default runlevel
+    echo 'default' > /etc/runlevels/default
 }
 
 ask_config
@@ -321,8 +337,8 @@ echo -ne "\r\033[K"
 echo -e " - Setup of ${LOADER}: \e[92m\u2713\e[0m"
 
 echo
-echo -n "Enabling services:"
-enable_services
+echo -n "Configuring OpenRC services..."
+configure_openrc
 
 echo
 echo "=========================================="
@@ -334,6 +350,7 @@ echo "- Hostname: ${HOST_NAME}"
 echo "- User: ${USER_NAME}"
 echo "- Bootloader: ${LOADER}"
 echo "- Kernel: ${KERNEL_VERSION}"
+echo "- Init System: OpenRC"
 echo
 echo "Returning to the installation script..."
 echo

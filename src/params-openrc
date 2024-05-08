@@ -1,0 +1,42 @@
+# OpenRC Configuration Parameters for Exherbo Installation
+# Copy this to 'params' and modify as needed
+
+COUNTRY_CODE="us"
+DISK="/dev/sda"
+DNS_SERVER_1="1.1.1.1"
+DNS_SERVER_2="9.9.9.9"
+GRUB_TIMEOUT="5"
+HOST_NAME="exherbo"
+KERNEL_INTERACTIVE="false"
+KERNEL_VERSION="6.8.9"
+LOADER="grub"  # OpenRC works best with GRUB
+TIMEZONE="UTC"
+USER_NAME="exherbo"
+PASSWORD_ASK="false"
+
+# OpenRC-specific packages
+PACKAGES=(
+    app-editors/nano
+    app-misc/fastfetch
+    firmware/linux-firmware
+    sys-apps/openrc
+    sys-apps/busybox
+    net-misc/dhcpcd
+    sys-apps/elogind
+    sys-apps/dbus
+    sys-apps/consolekit2
+    net-misc/openssh
+    app-admin/sudo
+    sys-apps/util-linux
+    sys-apps/coreutils
+)
+
+# Repositories to add
+REPOSITORIES=(
+    hardware
+    marv
+    tombriden
+)
+
+# Swap size in GB (leave empty for no swap)
+SWAP_SIZE=""
